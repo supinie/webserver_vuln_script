@@ -1,3 +1,5 @@
+#!/bin/bash
+
 PORTS='443,80,22,161,23,53,25,139,113,111,135'
 IPS='' # create variable to store ips that are running http or https (the other ports are useful for manual review so are still scanned)
 VERSIONS=''
