@@ -1,0 +1,64 @@
+PORTS='443,80,22,161,23,53,25,139,113,111,135'
+IPS='' # create variable to store ips that are running http or https (the other ports are useful for manual review so are still scanned)
+VERSIONS=''
+
+# step 1: scan for hosts running web-services (list from 1b)
+
+sudo nmap -sS 192.168.0.0/24 -p$PORTS -oG script_scan --open
+# nmap scan for these ports. We use -sS for tcp syn scan, -oG so we can get a grep-able output for easy manipulation later,
+# --open so that it only lists the open ports.
+
+IPS+=$(awk '/http/ || /https/ {print $2}' script_scan)
+# use awk to extract the ips that have port 80 or 443 open, stored in a string seperated by spaces to put back into nmap later
+echo "Hosts running definitely running webservices:"
+echo $IPS | tr " " "\n"
+echo ""
+# step 2: scan the ips found running web-services from step 1
+
+sudo nmap -sV -sS $IPS -p$PORTS -oN script_version_scan --open
+
+VERSIONS+=$(awk '$1 ~ /^[0-9]/ {for(i=4; i<=NF; i++) if(i==NF){print $i, "|"} else{print $i}}' script_version_scan)
+# Here, we look to see if the line begins with a number, in other words it is the information about a port from the scan
+# We then take the 4th to last words, these being the versions information of the service running on that port.
+# If it is the last word of the information, add a | so that we can easily seperate services later when searching for vulnerabilities.
+
+IFS="|" VERSIONS_TEMP=($VERSIONS)
+
+unset duplicates
+declare -A duplicates
+for i in "${VERSIONS_TEMP[@]}"; do
+    if [[ -z ${duplicates[$i]} ]]; then
+        VERSIONS_UNIQUE+=("$i")
+    fi
+    duplicates["$i"]=1
+done
+unset duplicates
+
+# step 3: Use SearchSploit to search for vulnerabilities associated with these service versions
+# This will recursively search for vulnerabilities with the service versions, removing the least significant word if it finds nothing.
+# Therefore, the higher the uncertainty, the less likely you are to find a working vulnerability.
+
+echo "Versions of webservices running on hosts found:"
+for version in "${VERSIONS_UNIQUE[@]}"; do
+    # set variables that we will use in the loop and searching.
+    UNCERTAINTY=0
+    LOOP_VAR=$(echo $version | tr '\n' ' ') # Format nicely into one line
+    LENGTH=$(echo $LOOP_VAR | awk '{print NF}')     # NF is the number of words
+    while [ $LENGTH -gt 1 ]; do     # While we still have characters
+    # (although in almost every case we will terminate without having to use this case.
+        search_result=$(searchsploit $LOOP_VAR) #Search metasploit db
+        TEMP=$(echo $search_result | head -5 | tail -1 | awk '$0 ~ /[a-zA-Z]/ {print "True"}')
+        if [ "$TEMP" = "True" ]; then   # This and the line above look at the 5th line in the search result - the first result.
+            # If it contains letters then we have found a result and so we return our search and move on to the next version.
+            echo $version | tr '\n' ' ' | tee -a exploits_found
+            echo -e "\nFound searching: " $LOOP_VAR | tee -a exploits_found
+            echo -e "\nUncertainty: " $UNCERTAINTY | tee -a exploits_found
+            echo $search_result | tee -a exploits_found
+            break
+        fi
+        # Now we remove the last word of our service version
+        LOOP_VAR=$(echo $LOOP_VAR | awk '{for(i=1; i<NF; i++) {print $i}}' | tr '\n' ' ')
+        ((UNCERTAINTY++))       # Increase the uncertainty
+        LENGTH=$(echo $LOOP_VAR | awk '{print NF}')     # Recalculate length
+    done
+done
